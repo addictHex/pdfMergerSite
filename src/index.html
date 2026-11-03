@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Merger — runs in your browser (Pyodide)</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+      .row { display: flex; gap: .75rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+      button, a.download { padding: .5rem 1rem; border-radius: 6px; border: 1px solid #444; background: #eee; text-decoration: none; color: #111; cursor: pointer; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      a.download[hidden] { display: none; }
+      #log { background: #111; color: #9f9; padding: .75rem; border-radius: 6px; min-height: 8rem; max-height: 20rem; overflow: auto; font-size: .85rem; white-space: pre-wrap; }
+      #fileList { list-style: none; padding: 0; margin: .5rem 0; }
+      #fileList li { display: flex; align-items: center; gap: .5rem; padding: .35rem .6rem; border: 1px solid #ccc; border-radius: 6px; margin-bottom: .35rem; background: #fafafa; }
+      #fileList .idx { min-width: 1.4rem; font-weight: 600; color: #555; text-align: right; }
+      #fileList .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #fileList .fsize { color: #777; font-size: .8rem; white-space: nowrap; }
+      #fileList button { padding: 0 .5rem; border-radius: 4px; border: 1px solid #999; background: #fff; cursor: pointer; line-height: 1.6; }
+      #fileList button:hover:not(:disabled) { background: #eee; }
+      #fileList button:disabled { opacity: .35; cursor: default; }
+      p.hint { color: #666; font-size: .85rem; }
+    </style>
+  </head>
+  <body>
+    <h1>PDF Merger</h1>
+    <p>Merges PDFs entirely in your browser with Python (Pyodide + pypdf). Files never leave your machine.</p>
+
+    <div class="row">
+      <label>
+        PDF files (picks are appended to the list below — rearrange before merging):
+        <input type="file" id="pdfInput" accept="application/pdf,.pdf" multiple />
+      </label>
+      <button id="mergeBtn" disabled>Merge</button>
+      <a id="downloadLink" class="download" hidden download="merged.pdf">Download merged.pdf</a>
+    </div>
+
+    <ul id="fileList" aria-label="Selected PDFs, in merge order"></ul>
+    <p class="hint">Merge order = list order above. Use &uarr; / &darr; to rearrange, &times; to remove a file.</p>
+
+    <pre id="log"></pre>
+
+    <!-- Fallback copy of src/main.py, used when this page is opened via file://
+         (fetch() does not work there). Keep in sync with main.py. -->
+    <script type="text/python" id="python-code">
+"""Merge PDF files inside Pyodide's virtual file system.
+
+index.html writes the selected PDFs into INPUT_DIR via
+``pyodide.FS.writeFile()`` and then executes this file with
+``pyodide.runPython()`` / ``runPythonAsync()``.  The merged result is
+written to OUTPUT_PATH, where index.html reads it back with
+``pyodide.FS.readFile()`` and offers it as a download.
+
+The script also runs standalone (e.g. in the project .venv) for local
+testing: point PDF_MERGER_INPUT_DIR / PDF_MERGER_OUTPUT_PATH at real
+directories, e.g.
+
+    PDF_MERGER_INPUT_DIR=/tmp/pdfin \
+    PDF_MERGER_OUTPUT_PATH=/tmp/pdfout/merged.pdf \
+    .venv/bin/python src/main.py
+"""
+
+import os
+import sys
+
+INPUT_DIR = os.environ.get("PDF_MERGER_INPUT_DIR", "/home/pyodide/inputs")
+OUTPUT_PATH = os.environ.get(
+    "PDF_MERGER_OUTPUT_PATH", "/home/pyodide/output/merged.pdf"
+)
+
+
+def log(msg: str) -> None:
+    """Send a progress message to the browser UI.
+
+    In the browser ``js_log`` is a JavaScript function injected by
+    index.html via ``pyodide.globals.set("js_log", fn)`` (JS -> Python
+    passthrough).  Outside Pyodide we fall back to print().
+    """
+    js_fn = globals().get("js_log")
+    if callable(js_fn):
+        js_fn(str(msg))
+    else:
+        print(msg, flush=True)
+
+
+def merge_pdfs() -> str:
+    from pypdf import PdfReader, PdfWriter
+
+    names = sorted(n for n in os.listdir(INPUT_DIR) if n.lower().endswith(".pdf"))
+    if len(names) < 2:
+        raise ValueError(
+            f"Need at least 2 PDFs to merge, found {len(names)} in {INPUT_DIR}"
+        )
+
+    log(f"Merging {len(names)} PDFs from {INPUT_DIR} ...")
+    writer = PdfWriter()
+    for name in names:
+        path = os.path.join(INPUT_DIR, name)
+        reader = PdfReader(path)
+        if reader.is_encrypted:
+            # Try the empty password; most "encrypted" PDFs open with it.
+            if not reader.decrypt(""):
+                raise PermissionError(f"{name} is encrypted and could not be opened")
+        n_pages = len(reader.pages)
+        for page in reader.pages:
+            writer.add_page(page)
+        log(f"  + {n_pages} page(s) from {name}")
+
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+    with open(OUTPUT_PATH, "wb") as fh:
+        writer.write(fh)
+
+    size = os.path.getsize(OUTPUT_PATH)
+    log(f"Wrote {OUTPUT_PATH}: {len(writer.pages)} pages, {size:,} bytes")
+    return OUTPUT_PATH
+
+
+if __name__ == "__main__" and sys.platform != "emscripten":
+    # Auto-run only for local CLI testing; in the browser index.html calls
+    # merge_pdfs() explicitly (sys.platform is "emscripten" under Pyodide).
+    merge_pdfs()
+    </script>
+
+    <script type="module">
+      const INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
+      const INPUT_DIR = "/home/pyodide/inputs";
+      const OUTPUT_PATH = "/home/pyodide/output/merged.pdf";
+
+      const $ = (id) => document.getElementById(id);
+      const logEl = $("log");
+      function logLine(msg) {
+        logEl.textContent += msg + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      let pyodide = null;
+
+      async function initPyodide() {
+        logLine("Loading Pyodide ...");
+        pyodide = await loadPyodide({ indexURL: INDEX_URL });
+        pyodide.setStdout({ batched: (m) => logLine(m) });
+        pyodide.setStderr({ batched: (m) => logLine("[stderr] " + m) });
+
+        // Passthrough JS -> Python: expose a browser function to the Python
+        // globals so main.py's log() can stream progress into the page.
+        pyodide.globals.set("js_log", (msg) => logLine(String(msg)));
+
+        logLine("Installing pypdf via micropip ...");
+        await pyodide.loadPackage("micropip");
+        await pyodide.runPythonAsync(`
+            import micropip
+            await micropip.install("pypdf")
+        `);
+        logLine("Ready — pick your PDFs.");
+      }
+
+      // Passthrough file contents JS -> Python: ArrayBuffer -> Emscripten FS.
+      async function writeFilesToPyodide(files) {
+        if (!pyodide.FS.analyzePath(INPUT_DIR).exists) pyodide.FS.mkdir(INPUT_DIR);
+        for (const name of pyodide.FS.readdir(INPUT_DIR)) {
+          if (name !== "." && name !== "..") pyodide.FS.unlink(`${INPUT_DIR}/${name}`);
+        }
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i];
+          if (!f.name.toLowerCase().endsWith(".pdf")) throw new Error(`Not a PDF: ${f.name}`);
+          const buf = await f.arrayBuffer();
+          // Zero-pad the index so lexicographic order == selection order.
+          const safe = f.name.replace(/[^\w.\-]+/g, "_");
+          const dest = `${INPUT_DIR}/${String(i).padStart(3, "0")}_${safe}`;
+          pyodide.FS.writeFile(dest, buf);
+          logLine(`Wrote ${dest} (${buf.byteLength.toLocaleString()} bytes)`);
+        }
+      }
+
+      // Passthrough code JS -> Python: read the merge script from disk when
+      // served over http(s); fall back to the inline <script type="text/python">
+      // copy when opened via file://.
+      async function loadMergeCode() {
+        try {
+          const res = await fetch("main.py", { cache: "no-store" });
+          if (res.ok) return await res.text();
+        } catch { /* file:// — use the inline copy */ }
+        return $("python-code").textContent;
+      }
+
+      // Selected PDFs in *merge order*. The file input only adds files;
+      // the user rearranges them in this list before merging.
+      const selectedFiles = [];
+
+      function fmtBytes(n) {
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+        return (n / 1024 / 1024).toFixed(1) + " MB";
+      }
+
+      function renderFileList() {
+        const ul = $("fileList");
+        ul.textContent = "";
+        selectedFiles.forEach((f, i) => {
+          const li = document.createElement("li");
+
+          const idx = document.createElement("span");
+          idx.className = "idx";
+          idx.textContent = String(i + 1);
+          li.appendChild(idx);
+
+          const name = document.createElement("span");
+          name.className = "fname";
+          name.textContent = f.name;
+          name.title = f.name;
+          li.appendChild(name);
+
+          const size = document.createElement("span");
+          size.className = "fsize";
+          size.textContent = fmtBytes(f.size);
+          li.appendChild(size);
+
+          const mkBtn = (label, fn, disabled) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.textContent = label;
+            b.disabled = !!disabled;
+            b.addEventListener("click", () => fn());
+            return b;
+          };
+          li.appendChild(mkBtn("\u2191", () => move(i, -1), i === 0));
+          li.appendChild(mkBtn("\u2193", () => move(i, +1), i === selectedFiles.length - 1));
+          li.appendChild(mkBtn("\u00d7", () => removeAt(i)));
+
+          ul.appendChild(li);
+        });
+        $("mergeBtn").disabled = selectedFiles.length < 2;
+      }
+
+      function move(i, delta) {
+        const j = i + delta;
+        if (j < 0 || j >= selectedFiles.length) return;
+        [selectedFiles[i], selectedFiles[j]] = [selectedFiles[j], selectedFiles[i]];
+        renderFileList();
+      }
+
+      function removeAt(i) {
+        selectedFiles.splice(i, 1);
+        renderFileList();
+      }
+
+      async function merge() {
+        const files = [...selectedFiles];
+        if (files.length < 2) return;
+        $("mergeBtn").disabled = true;
+        $("downloadLink").hidden = true;
+        try {
+          await writeFilesToPyodide(files);
+          pyodide.runPython(await loadMergeCode());   // defines merge_pdfs()
+          await pyodide.runPythonAsync("merge_pdfs()");
+          const bytes = pyodide.FS.readFile(OUTPUT_PATH); // Uint8Array -> browser
+          const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+          const link = $("downloadLink");
+          link.href = url;
+          link.hidden = false;
+        } catch (err) {
+          logLine("ERROR: " + err);
+        } finally {
+          $("mergeBtn").disabled = false;
+        }
+      }
+
+      initPyodide().catch((err) => logLine("Failed to load Pyodide: " + err));
+      $("pdfInput").addEventListener("change", () => {
+        const added = [...$("pdfInput").files];
+        if (added.length) {
+          for (const f of added) selectedFiles.push(f);
+          $("pdfInput").value = ""; // let the same file be picked again
+          renderFileList();
+        }
+      });
+      $("mergeBtn").addEventListener("click", merge);
+    </script>
+  </body>
+</html>
